@@ -11,6 +11,9 @@ import { distance } from './geo.js';
 import { $, esc, toast } from './ui.js';
 
 export const ARRIVE_M = 45;
+// Stations placed automatically from a drawn map are typically 50-180 m off, so they get a wider arrival radius.
+const RADIUS = { high: 120, medium: 160, low: 220 };
+export const arriveRadius = s => RADIUS[s.conf] || ARRIVE_M;
 
 export function normalizeRoute(raw, fallbackId) {
   // Accept the stations.json produced by the route pipeline as well as the v1 format.
@@ -123,7 +126,7 @@ export const guide = {
     if (!this.route) return;
     for (const s of this.route.stations) {
       if (this.visited.has(s.n) || !located(s)) continue;
-      if (distance(pos, [s.lon, s.lat]) <= ARRIVE_M) {
+      if (distance(pos, [s.lon, s.lat]) <= arriveRadius(s)) {
         this.visited.add(s.n);
         await idb.kvSet(`visited:${this.route.id}`, [...this.visited]);
         navigator.vibrate?.([200, 100, 200]);
