@@ -127,3 +127,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .filters select, .filters input { width: 100%; font: inherit; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
 .filters label { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); }
 .searchq { width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.station-pin.approx { border-style: dashed; opacity: .85; }
+.station-pin.small { width: 24px; height: 24px; font-size: 12px; flex: none; }
+details.stations summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
+details.stations .row { cursor: pointer; }
+.route-map { width: 100%; height: auto; display: block; touch-action: pinch-zoom; }

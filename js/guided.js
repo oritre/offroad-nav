@@ -15,13 +15,15 @@ export const ARRIVE_M = 45;
 export function normalizeRoute(raw, fallbackId) {
   // Accept the stations.json produced by the route pipeline as well as the v1 format.
   const stations = (raw.stations || []).map(s => ({
-    n: s.n ?? s.number, name: s.short_name || s.name, lat: s.lat, lon: s.lon, role: s.role || 'walking', blocks: s.blocks || [],
+    n: s.n ?? s.number, name: s.short_name || s.name, lat: s.lat ?? null, lon: s.lon ?? null, role: s.role || 'walking',
+    conf: s.conf || null, blocks: s.blocks || [],
   }));
   return {
     id: String(raw.id || raw.post_id || fallbackId || Date.now()),
     title: raw.title || raw.route || 'מסלול',
     intro: raw.intro || [],
     line: raw.line || [], driveLine: raw.driveLine || [],
+    start: raw.start || null, navLinks: raw.navLinks || [], mapImage: raw.mapImage || null, category: raw.category || null,
     stations, importedAt: Date.now(),
   };
 }
@@ -47,7 +49,21 @@ export function openReader(title, blocks) {
   speakingText = blocksToSpeech(blocks);
   if (guide.autoSpeak) speak(speakingText);
 }
-export function closeReader() { $('#reader').classList.add('hidden'); speechSynthesis?.cancel(); }
+export function closeReader() {
+  $('#reader').classList.add('hidden'); speechSynthesis?.cancel();
+  if (imageUrl) { URL.revokeObjectURL(imageUrl); imageUrl = null; }
+}
+// Shows an image (e.g. the route's drawn map) in the reader; pinch-zoom works inside it.
+let imageUrl = null;
+export function openImage(title, blob) {
+  closeReader();
+  imageUrl = URL.createObjectURL(blob);
+  $('#readerTitle').textContent = title;
+  $('#readerBody').innerHTML = `<img class="route-map" src="${imageUrl}" alt="">`;
+  $('#reader').classList.remove('hidden');
+  speakingText = '';
+}
+export const located = s => s.lat != null && s.lon != null;
 
 export function speak(text) {
   if (!('speechSynthesis' in window) || !text) return toast('הקראה לא נתמכת בדפדפן הזה');
@@ -96,7 +112,7 @@ export const guide = {
 
   nextStation(pos) {
     if (!this.route) return null;
-    const left = this.route.stations.filter(s => !this.visited.has(s.n));
+    const left = this.route.stations.filter(s => !this.visited.has(s.n) && located(s));
     if (!left.length) return null;
     if (!pos) return left[0];
     return left.reduce((a, b) => distance(pos, [a.lon, a.lat]) <= distance(pos, [b.lon, b.lat]) ? a : b);
@@ -106,7 +122,7 @@ export const guide = {
   async onPosition(pos) {
     if (!this.route) return;
     for (const s of this.route.stations) {
-      if (this.visited.has(s.n)) continue;
+      if (this.visited.has(s.n) || !located(s)) continue;
       if (distance(pos, [s.lon, s.lat]) <= ARRIVE_M) {
         this.visited.add(s.n);
         await idb.kvSet(`visited:${this.route.id}`, [...this.visited]);
