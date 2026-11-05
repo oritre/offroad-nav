@@ -1,6 +1,6 @@
 // Guided routes: a route line plus numbered stations; each station's reading opens (and can be read aloud)
 // when you arrive within ARRIVE_M of it. Route files are private and never ship with the app:
-// they are imported from a file or fetched from a private library URL (e.g. the home Pi over Tailscale).
+// they are imported from a file or read from the owner's private Google Drive folder (see drive.js).
 //
 // Route JSON format (v1):
 // { "id": "43257", "title": "...", "intro": [[type, text], ...], "line": [[lon,lat],...], "driveLine": [[lon,lat],...],

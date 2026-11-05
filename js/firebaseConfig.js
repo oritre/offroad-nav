@@ -1,7 +1,12 @@
-// Firebase web config for live sync of YOUR points, tracks and layers between devices.
-// Not a secret for web apps: access is enforced by firestore.rules (each signed-in user sees only users/{uid}).
-// Leave as null to run fully local on each device.
-export const firebaseConfig = null;
-
-// Optional: only these Google accounts may sign in (checked client-side; the rules enforce per-user isolation).
+// Firebase web config for the offroad-nav project. These values are public identifiers, not secrets:
+// access is enforced by firestore.rules (each user can only read/write users/{own uid}).
+export const firebaseConfig = {
+  apiKey: 'AIzaSyCbJB6CI9WM9KWyj-haUCmyldaJLCoC5Ls',
+  authDomain: 'offroad-nav-879a0.firebaseapp.com',
+  projectId: 'offroad-nav-879a0',
+  storageBucket: 'offroad-nav-879a0.firebasestorage.app',
+  messagingSenderId: '57239112799',
+  appId: '1:57239112799:web:1439317360d0481f351fea',
+};
+// Only these Google accounts may sign in (others are signed out right away).
 export const allowedEmails = ['origroup@gmail.com'];

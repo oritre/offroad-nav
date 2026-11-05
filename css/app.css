@@ -115,3 +115,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .station-pin { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff; font-weight: 700; display: flex; align-items: center;
   justify-content: center; border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,.35); font-size: 13px; }
 .station-pin.done { background: #9c8bc4; }
+
+.searchbar { display: flex; gap: 8px; margin-bottom: 8px; }
+.searchbar input { flex: 1; min-width: 0; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.filters { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 6px 0; }
+.filters select, .filters input { width: 100%; font: inherit; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.filters label { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); }
+.searchq { width: 100%; box-sizing: border-box; font: inherit; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
