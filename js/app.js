@@ -502,7 +502,7 @@ const panels = {
     const saved = await idb.all('routes');
     const maps = await idb.kvGet('routeMaps', {});
     openSheet('library', 'מסלולים מודרכים', `
-      <p class="note">מסלול עם תחנות: הקו על המפה, וקטע הקריאה של כל תחנה נפתח לבד כשמגיעים אליה (במרחק ${ARRIVE_M} מ'). התוכן פרטי ונטען רק מהדרייב שלך או מקובץ.</p>
+      <p class="note">מסלול עם תחנות: הקו על המפה, וקטע הקריאה של כל תחנה נפתח לבד כשמגיעים אליה (במרחק ${ARRIVE_M} מ', ובתחנות שמוקמו אוטומטית עד 220 מ'). התוכן פרטי ונטען רק מהדרייב שלך או מקובץ.</p>
       ${guide.route ? activeRouteHtml(guide.route, maps) : ''}
       <label class="row"><input type="checkbox" id="autoSpeak" ${guide.autoSpeak ? 'checked' : ''}><div class="grow"><div class="title">🔊 הקראה אוטומטית בהגעה לתחנה</div></div></label>
       <div class="group">שמורים במכשיר (עובדים בלי קליטה)</div>
