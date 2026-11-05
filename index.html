@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#1f3b2d">
+  <title>שטח</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="vendor/maplibre-gl.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="map" aria-label="מפה"></div>
+
+  <!-- Top status strip: GPS, recording, sync -->
+  <header class="topbar">
+    <div class="chip" id="gpsChip" title="מצב GPS">GPS: כבוי</div>
+    <div class="chip rec hidden" id="recChip">● מקליט <span id="recStats"></span></div>
+    <div class="chip" id="syncChip" title="סנכרון">לא מסונכרן</div>
+  </header>
+
+  <!-- Navigation banner (navigate-to-point / guided route) -->
+  <div class="navbanner hidden" id="navBanner">
+    <div class="navarrow" id="navArrow">▲</div>
+    <div class="navtext">
+      <div id="navTitle">ניווט</div>
+      <div class="navsub" id="navSub"></div>
+    </div>
+    <button class="iconbtn" id="navStop" aria-label="הפסק ניווט">✕</button>
+  </div>
+
+  <!-- Right side floating buttons -->
+  <div class="fabs">
+    <button class="fab" id="btnLocate" aria-label="המיקום שלי" title="המיקום שלי">◎</button>
+    <button class="fab" id="btnNorth" aria-label="צפון למעלה" title="צפון למעלה">N</button>
+  </div>
+
+  <!-- Bottom toolbar -->
+  <nav class="toolbar">
+    <button data-panel="layers"><span>🗺️</span>מפות</button>
+    <button data-panel="data"><span>📍</span>מידע</button>
+    <button id="btnRecord"><span>⏺</span>הקלטה</button>
+    <button data-panel="library"><span>📖</span>מסלולים</button>
+    <button data-panel="mine"><span>⭐</span>שלי</button>
+    <button data-panel="more"><span>☰</span>עוד</button>
+  </nav>
+
+  <!-- Bottom sheet -->
+  <section class="sheet hidden" id="sheet" role="dialog" aria-modal="false">
+    <div class="sheet-head">
+      <h2 id="sheetTitle"></h2>
+      <button class="iconbtn" id="sheetClose" aria-label="סגור">✕</button>
+    </div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </section>
+
+  <!-- Reading popup for guided route stations -->
+  <section class="reader hidden" id="reader" role="dialog" aria-modal="true">
+    <div class="reader-head">
+      <h2 id="readerTitle"></h2>
+      <div class="reader-actions">
+        <button class="iconbtn" id="readerSpeak" aria-label="הקרא">🔊</button>
+        <button class="iconbtn" id="readerClose" aria-label="סגור">✕</button>
+      </div>
+    </div>
+    <div class="reader-body" id="readerBody"></div>
+  </section>
+
+  <div class="toast hidden" id="toast"></div>
+  <input type="file" id="fileInput" accept=".gpx,.kml,.geojson,.json,application/gpx+xml,application/vnd.google-earth.kml+xml" multiple hidden>
+
+  <script src="vendor/maplibre-gl.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

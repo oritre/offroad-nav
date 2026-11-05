@@ -1,0 +1,10 @@
+# Private route content (paid subscription, personal use only) must never be committed.
+private/
+routes/
+*.route.json
+stations*.json
+*.kml
+*.kmz
+*.gpx
+*.docx
+node_modules/
