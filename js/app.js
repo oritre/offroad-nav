@@ -207,7 +207,10 @@ function editTrack(item) {
 }
 
 // ---------------------------------------------------------------- GPS
-let me = null, meMarker, follow = false, heading = null, watchId = null;
+// Location marker like a phone map: blue dot, a translucent beam toward the direction you face
+// (phone compass when standing, GPS course when moving), and an accuracy circle.
+// The locate button cycles: off -> follow me -> follow me with the map turned to where I face.
+let me = null, meMarker, follow = 0, heading = null, headingSrc = null, watchId = null, compassAt = 0;
 function startGps() {
   if (watchId != null) return;
   if (!navigator.geolocation) return toast('אין GPS במכשיר הזה');
@@ -215,21 +218,29 @@ function startGps() {
   watchId = navigator.geolocation.watchPosition(onFix, err => {
     $('#gpsChip').textContent = err.code === 1 ? 'GPS: אין הרשאה' : 'GPS: אין קליטה';
   }, { enableHighAccuracy: true, maximumAge: 2000, timeout: 30000 });
+  startCompass();
+}
+function ensureMarker() {
+  if (meMarker) return;
+  const el = document.createElement('div'); el.className = 'me';
+  el.innerHTML = `<svg class="beam" viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">
+    <defs><radialGradient id="beamG" cx="60" cy="60" r="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0.15" stop-color="#1a73e8" stop-opacity=".55"/><stop offset="1" stop-color="#1a73e8" stop-opacity="0"/></radialGradient></defs>
+    <path d="M60 60 L38 6 A58 58 0 0 1 82 6 Z" fill="url(#beamG)"/></svg><div class="dot"></div>`;
+  meMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map', pitchAlignment: 'map' }).setLngLat(me.coord).addTo(map);
 }
 function onFix(p) {
   const { longitude: lon, latitude: lat, accuracy, altitude, heading: h, speed } = p.coords;
   me = { coord: [lon, lat], accuracy, altitude, speed, t: p.timestamp };
-  if (h != null && !Number.isNaN(h) && speed > 0.7) heading = h;
+  // Moving faster than a walk: the GPS course is steadier than the compass (which a car can disturb).
+  if (h != null && !Number.isNaN(h) && speed > 2.5) setHeading(h, 'gps', true);
+  else if (Date.now() - compassAt > 5000 && h != null && !Number.isNaN(h) && speed > 0.7) setHeading(h, 'gps', true);
   $('#gpsChip').textContent = `GPS: ±${Math.round(accuracy)} מ'${altitude != null ? ` · ${Math.round(altitude)} מ' גובה` : ''}`;
-  if (!meMarker) {
-    const el = document.createElement('div'); el.className = 'me-dot'; el.innerHTML = '<div class="head"></div>';
-    meMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' }).setLngLat(me.coord).addTo(map);
-  }
+  ensureMarker();
   meMarker.setLngLat(me.coord);
-  meMarker.getElement().querySelector('.head').style.display = heading == null ? 'none' : '';
-  if (heading != null) meMarker.setRotation(heading);
+  meMarker.getElement().classList.toggle('stale', Date.now() - p.timestamp > 15000);
   map.getSource('accuracy')?.setData(circle(me.coord, accuracy));
-  if (follow) map.easeTo({ center: me.coord, duration: 500 });
+  if (follow) map.easeTo({ center: me.coord, bearing: follow === 2 && heading != null ? heading : map.getBearing(), duration: 500 });
   onRecordFix(p);
   updateNav();
   guide.onPosition(me.coord);
@@ -242,18 +253,68 @@ function circle([lon, lat], r) {
   }
   return { type: 'Feature', geometry: { type: 'Polygon', coordinates: [pts] } };
 }
-// Compass for the heading arrow when standing still.
-window.addEventListener('deviceorientationabsolute', e => { if (e.alpha != null && !(me?.speed > 0.7)) { heading = (360 - e.alpha) % 360; meMarker?.setRotation(heading); updateNav(); } }, true);
 
+// Smoothed heading (handles the 359°→0° wrap), drawn at most once per animation frame.
+let drawQueued = false;
+function setHeading(deg, src, snap = false) {
+  if (heading == null || snap) heading = deg;
+  else { let d = ((deg - heading + 540) % 360) - 180; heading = (heading + d * 0.25 + 360) % 360; }
+  headingSrc = src;
+  if (drawQueued) return; drawQueued = true;
+  requestAnimationFrame(() => {
+    drawQueued = false;
+    if (meMarker) { meMarker.setRotation(heading); meMarker.getElement().classList.add('has-heading'); }
+    if (follow === 2 && me) map.jumpTo({ bearing: heading });
+    updateNav();
+  });
+}
+let compassOn = false;
+function startCompass() {
+  if (compassOn) return;
+  const screenAngle = () => (screen.orientation?.angle ?? window.orientation ?? 0);
+  const onAbs = e => {
+    if (e.alpha == null) return;
+    compassAt = Date.now();
+    if (me?.speed > 2.5) return;
+    setHeading((360 - e.alpha + screenAngle()) % 360, 'compass');
+  };
+  const onIos = e => {
+    if (e.webkitCompassHeading == null) return;
+    compassAt = Date.now();
+    if (me?.speed > 2.5) return;
+    setHeading((e.webkitCompassHeading + screenAngle()) % 360, 'compass');
+  };
+  const DOE = window.DeviceOrientationEvent;
+  if ('ondeviceorientationabsolute' in window) {
+    // Android Chrome: compass relative to true north.
+    window.addEventListener('deviceorientationabsolute', onAbs, true); compassOn = true;
+  } else if (DOE && typeof DOE.requestPermission === 'function') {
+    // iPhone: needs a tap (startGps is called again from the locate button).
+    DOE.requestPermission().then(r => { if (r === 'granted' && !compassOn) { window.addEventListener('deviceorientation', onIos, true); compassOn = true; } }).catch(() => {});
+  } else if (DOE) {
+    window.addEventListener('deviceorientation', e => e.absolute ? onAbs(e) : onIos(e), true); compassOn = true;
+  }
+}
+
+function setFollow(mode) {
+  follow = mode;
+  const b = $('#btnLocate');
+  b.classList.toggle('active', mode > 0);
+  b.classList.toggle('compass', mode === 2);
+  b.textContent = mode === 2 ? '🧭' : '◎';
+  b.title = ['המיקום שלי', 'עוקב אחריי (לחץ שוב: המפה מסתובבת לכיוון שלי)', 'המפה מסתובבת לכיוון שלי'][mode];
+}
 $('#btnLocate').onclick = () => {
-  startGps();
-  follow = !follow;
-  $('#btnLocate').classList.toggle('active', follow);
-  if (me) map.easeTo({ center: me.coord, zoom: Math.max(map.getZoom(), 15) });
+  startGps(); compassOn || startCompass();
+  const next = me ? (follow + 1) % 3 : 1;
+  setFollow(next);
+  if (me && next === 1) map.easeTo({ center: me.coord, zoom: Math.max(map.getZoom(), 15), bearing: 0 });
+  if (me && next === 2) map.easeTo({ center: me.coord, zoom: Math.max(map.getZoom(), 16), bearing: heading ?? 0, pitch: 45 });
+  if (next === 0) map.easeTo({ bearing: 0, pitch: 0 });
 };
-map.on('dragstart', () => { if (follow) { follow = false; $('#btnLocate').classList.remove('active'); } });
+map.on('dragstart', () => { if (follow) setFollow(0); });
 $('#btnSearch').onclick = () => sheetOpen() === 'search' ? closeSheet() : panels.search();
-$('#btnNorth').onclick = () => map.easeTo({ bearing: 0, pitch: 0 });
+$('#btnNorth').onclick = () => { if (follow === 2) setFollow(1); map.easeTo({ bearing: 0, pitch: 0 }); };
 
 // ---------------------------------------------------------------- recording
 let rec = null; // { coords: [[lon,lat,ele,t]], start }
