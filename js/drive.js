@@ -38,9 +38,18 @@ export async function listDriveRoutes(token) {
     try { for (const m of (await (await api(token, { alt: 'media' }, `/${idxFile.id}`)).json()).routes || []) meta[m.file] = m; } catch { /* index optional */ }
   }
   return {
-    folder: true,
+    folder: true, folderIds: folders.map(f => f.id),
     files: files.filter(f => f !== idxFile).map(f => ({ title: f.name.replace(/(\.route)?\.json$/i, ''), ...meta[f.name], ...f })),
   };
+}
+
+// Optional drawn route map stored next to the route JSON (e.g. 43257.map.jpg).
+export async function getDriveImage(token, folderIds, name) {
+  for (const id of folderIds) {
+    const res = await (await api(token, { q: `'${id}' in parents and name='${name.replace(/'/g, "\\'")}' and trashed=false`, fields: 'files(id)' })).json();
+    if (res.files[0]) return (await api(token, { alt: 'media' }, `/${res.files[0].id}`)).blob();
+  }
+  return null;
 }
 
 export async function getDriveRoute(token, file) {
