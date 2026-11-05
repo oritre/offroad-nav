@@ -1,5 +1,5 @@
 // Service worker: app shell offline, map tiles cache-first (filled by browsing and by "download area").
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = `shell-${VERSION}`;
 const TILES = 'tiles-v1'; // tiles seen while browsing (trimmed)
 // 'tiles-saved' holds downloaded areas and is never trimmed.
