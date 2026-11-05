@@ -26,4 +26,6 @@ python3 -m http.server 8080
 ואז http://localhost:8080 .
 
 ## סנכרון
-מלאו את `js/firebaseConfig.js` בפרטי פרויקט Firebase נפרד, הפעילו התחברות Google, הוסיפו את `oritre.github.io` לדומיינים המורשים ופרסו את `firestore.rules`.
+פרויקט Firebase: `offroad-nav-879a0` (התחברות Google, Firestore עם `firestore.rules`). ההגדרות ב-`js/firebaseConfig.js` הן מזהים ציבוריים, לא סודות.
+
+

@@ -1,5 +1,5 @@
 // Service worker: app shell offline, map tiles cache-first (filled by browsing and by "download area").
-const VERSION = 'v1';
+const VERSION = 'v2';
 const SHELL = `shell-${VERSION}`;
 const TILES = 'tiles-v1'; // tiles seen while browsing (trimmed)
 // 'tiles-saved' holds downloaded areas and is never trimmed.
@@ -8,7 +8,7 @@ const SHELL_FILES = [
   './', './index.html', './css/app.css', './manifest.webmanifest',
   './vendor/maplibre-gl.js', './vendor/maplibre-gl.css', './vendor/togeojson.mjs',
   './js/app.js', './js/basemaps.js', './js/overlays.js', './js/idb.js', './js/sync.js', './js/firebaseConfig.js',
-  './js/geo.js', './js/offline.js', './js/guided.js', './js/ui.js',
+  './js/geo.js', './js/offline.js', './js/guided.js', './js/ui.js', './js/drive.js',
   './icons/icon-192.png', './icons/icon-512.png',
 ];
 const TILE_HOSTS = ['israelhiking.osm.org.il', 'tile.opentopomap.org', 'server.arcgisonline.com', 'tile.openstreetmap.org',

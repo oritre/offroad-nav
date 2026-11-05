@@ -3,7 +3,7 @@
 import { firebaseConfig, allowedEmails } from './firebaseConfig.js';
 
 const SDK = '10.14.1';
-let fs, auth, db, user, unsub;
+let fs, auth, db, user, unsub, driveToken = null;
 const listeners = new Set();
 
 export const sync = {
@@ -41,7 +41,22 @@ export const sync = {
     try { await this._authMod.signInWithPopup(auth, p); }
     catch { await this._authMod.signInWithRedirect(auth, p); }
   },
-  signOut() { return auth && this._authMod.signOut(auth); },
+  signOut() { driveToken = null; return auth && this._authMod.signOut(auth); },
+
+  // Read-only Google Drive access for the private route library. The token lasts about an hour;
+  // asking again opens Google's popup, which needs a tap (call it from a click handler).
+  async driveToken(force = false) {
+    if (!auth) throw new Error('sync off');
+    if (!force && driveToken && driveToken.exp > Date.now()) return driveToken.token;
+    const A = this._authMod, p = new A.GoogleAuthProvider();
+    p.addScope('https://www.googleapis.com/auth/drive.readonly');
+    if (user?.email) p.setCustomParameters({ login_hint: user.email });
+    const res = await A.signInWithPopup(auth, p);
+    const token = A.GoogleAuthProvider.credentialFromResult(res)?.accessToken;
+    if (!token) throw new Error('no token');
+    driveToken = { token, exp: Date.now() + 50 * 60 * 1000 };
+    return token;
+  },
 
   async push(item) {
     if (!user) return;

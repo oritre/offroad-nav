@@ -8,3 +8,4 @@ stations*.json
 *.gpx
 *.docx
 node_modules/
+routes.json

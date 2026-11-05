@@ -4,7 +4,8 @@ import { idb } from './idb.js';
 import { sync } from './sync.js';
 import { distance, bearing, lineLength, fmtDist, fmtTime, bboxOf, parseFile, toGPX, download } from './geo.js';
 import { downloadArea, countTiles, cacheStats, clearTiles, MAX_TILES } from './offline.js';
-import { guide, openReader, closeReader, toggleSpeak, normalizeRoute, fetchLibraryIndex, fetchLibraryRoute, ARRIVE_M } from './guided.js';
+import { guide, openReader, closeReader, toggleSpeak, normalizeRoute, ARRIVE_M } from './guided.js';
+import { listDriveRoutes, getDriveRoute, DRIVE_FOLDER } from './drive.js';
 import { $, esc, openSheet, closeSheet, sheetOpen, toast, swatches, bindSwatches } from './ui.js';
 
 const ISRAEL = [35.0, 31.6];
@@ -15,7 +16,6 @@ const settings = {
   wiki: await idb.kvGet('wiki', false),
   hillshade: await idb.kvGet('hillshade', false),
   terrain: await idb.kvGet('terrain', false),
-  libraryUrl: await idb.kvGet('libraryUrl', ''),
 };
 const view = await idb.kvGet('view', { center: ISRAEL, zoom: 7.5 });
 
@@ -121,6 +121,7 @@ sync.init(async remote => {
 }).catch(() => toast('הסנכרון לא זמין כרגע'));
 
 // ---------------------------------------------------------------- open data
+let poiFeatures = [];
 async function refreshPois() {
   const src = map.getSource('pois'); if (!src) return;
   const wanted = POI_LAYERS.filter(l => settings.pois.has(l.id));
@@ -130,6 +131,7 @@ async function refreshPois() {
     try { all.push(...await loadPoiLayer(map, l, { idb })); } catch { toast(`לא ניתן לטעון: ${l.name}`); }
   }));
   if (settings.wiki) all.push(...await loadWikipedia(map, { idb }));
+  poiFeatures = all;
   src.setData({ type: 'FeatureCollection', features: all });
 }
 
@@ -250,6 +252,7 @@ $('#btnLocate').onclick = () => {
   if (me) map.easeTo({ center: me.coord, zoom: Math.max(map.getZoom(), 15) });
 };
 map.on('dragstart', () => { if (follow) { follow = false; $('#btnLocate').classList.remove('active'); } });
+$('#btnSearch').onclick = () => sheetOpen() === 'search' ? closeSheet() : panels.search();
 $('#btnNorth').onclick = () => map.easeTo({ bearing: 0, pitch: 0 });
 
 // ---------------------------------------------------------------- recording
@@ -354,6 +357,7 @@ async function startRoute(r) {
   if (all.length) map.fitBounds(bboxOf({ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: all } }), { padding: 60, duration: 800 });
   closeSheet();
   if (r.intro?.length) openReader(r.title, r.intro);
+  else if (me?.coord) guide.onPosition(me.coord); // already standing at a station
 }
 $('#readerClose').onclick = closeReader;
 $('#readerSpeak').onclick = toggleSpeak;
@@ -435,47 +439,142 @@ const panels = {
 
   async library() {
     const saved = await idb.all('routes');
+    const maps = await idb.kvGet('routeMaps', {});
     openSheet('library', 'מסלולים מודרכים', `
-      <p class="note">מסלול עם תחנות: הקו על המפה, וקטע הקריאה של כל תחנה נפתח לבד כשמגיעים אליה (במרחק ${ARRIVE_M} מ'). התוכן פרטי ונטען רק מקובץ או מהספרייה הפרטית שלך.</p>
+      <p class="note">מסלול עם תחנות: הקו על המפה, וקטע הקריאה של כל תחנה נפתח לבד כשמגיעים אליה (במרחק ${ARRIVE_M} מ'). התוכן פרטי ונטען רק מהדרייב שלך או מקובץ.</p>
       ${guide.route ? `<div class="row"><div class="grow"><div class="title">פעיל: ${esc(guide.route.title)}</div><div class="sub">${guide.visited.size}/${guide.route.stations.length} תחנות נקראו</div></div>
         <button class="btn" id="gReset">מההתחלה</button><button class="btn danger" id="gStop">סיום</button></div>` : ''}
       <label class="row"><input type="checkbox" id="autoSpeak" ${guide.autoSpeak ? 'checked' : ''}><div class="grow"><div class="title">🔊 הקראה אוטומטית בהגעה לתחנה</div></div></label>
-      <div class="group">שמורים במכשיר</div>
-      ${saved.length ? saved.map(r => `<div class="row"><div class="grow"><div class="title">${esc(r.title)}</div><div class="sub">${r.stations.length} תחנות${r.line.length ? ` · ${fmtDist(lineLength(r.line))}` : ''}</div></div>
-        <button class="btn primary" data-start="${esc(r.id)}">התחל</button><button class="btn" data-rm="${esc(r.id)}">✕</button></div>`).join('') : '<p class="note">עדיין אין מסלולים. ייבא קובץ מסלול (JSON) או חבר את הספרייה הפרטית.</p>'}
-      <div class="btns"><button class="btn" id="gImport">ייבוא קובץ מסלול</button></div>
-      <div class="group">הספרייה הפרטית (ה-Pi בבית)</div>
-      <label class="field"><span>כתובת הספרייה</span><input id="libUrl" dir="ltr" value="${esc(settings.libraryUrl)}" placeholder="https://…ts.net/offroad-library/"></label>
-      <div class="btns"><button class="btn" id="libSave">שמור והצג</button></div>
-      <label class="field"><span>חיפוש בספרייה</span><input id="libQ" placeholder="שם מסלול, אזור…"></label>
-      <div id="libList"></div>`, root => {
+      <div class="group">שמורים במכשיר (עובדים בלי קליטה)</div>
+      ${saved.length ? saved.map(r => `<div class="row"><div class="grow"><div class="title">${esc(r.title)}</div><div class="sub">${r.stations.length} תחנות${r.line.length ? ` · ${fmtDist(lineLength(r.line))}` : ''} · ${maps[r.id] ? '✓ מפות שמורות' : 'מפות לא הורדו'}</div></div>
+        <button class="btn primary" data-start="${esc(r.id)}">התחל</button><button class="btn" data-maps="${esc(r.id)}" title="הורד מפות">⬇</button><button class="btn" data-rm="${esc(r.id)}">✕</button></div>`).join('') : '<p class="note">עדיין אין מסלולים במכשיר.</p>'}
+      <div class="group">הדרייב שלי</div>
+      <p class="note">קבצי המסלולים בתיקייה "${DRIVE_FOLDER}" בדרייב שלך. רק אתה רואה אותם. "הורד" שומר את המסלול ואת המפות סביבו במכשיר.</p>
+      ${sync.enabled ? '<div class="btns"><button class="btn primary" id="drv">הצג מסלולים מהדרייב</button></div>' : '<p class="note">צריך קודם להגדיר את החיבור לגוגל (Firebase).</p>'}
+      <div id="libFilters" class="hidden">
+        <input id="libQ" class="searchq" type="search" placeholder="חיפוש: שם מסלול, תחנה, אזור…">
+        <div class="filters">
+          <label>אזור<select id="fRegion"><option value="">הכל</option></select></label>
+          <label>קושי<select id="fDiff"><option value="">הכל</option></select></label>
+          <label>אורך עד (ק"מ)<input id="fLen" type="number" min="0" step="1" placeholder="ללא הגבלה"></label>
+          <label>מיון<select id="fSort"><option value="near">הכי קרוב אליי</option><option value="name">לפי שם</option><option value="len">לפי אורך</option></select></label>
+        </div>
+        <label class="row"><input type="checkbox" id="fSt"><div class="grow"><div class="title">רק מסלולים עם תחנות קריאה</div></div></label>
+        <p class="note" id="libCount"></p>
+      </div>
+      <div id="libList"></div>
+      <div class="btns"><button class="btn" id="gImport">ייבוא קובץ מסלול מהטלפון</button></div>`, root => {
       root.querySelector('#autoSpeak').onchange = e => { guide.autoSpeak = e.target.checked; idb.kvSet('autoSpeak', guide.autoSpeak); };
       root.querySelector('#gStop')?.addEventListener('click', async () => { await guide.stop(); panels.library(); });
       root.querySelector('#gReset')?.addEventListener('click', async () => { await guide.resetProgress(); panels.library(); });
       root.querySelectorAll('[data-start]').forEach(b => b.onclick = async () => startRoute(await idb.get('routes', b.dataset.start)));
+      root.querySelectorAll('[data-maps]').forEach(b => b.onclick = async () => downloadRouteMaps(await idb.get('routes', b.dataset.maps)));
       root.querySelectorAll('[data-rm]').forEach(b => b.onclick = async () => { if (confirm('להסיר מהמכשיר?')) { await idb.del('routes', b.dataset.rm); panels.library(); } });
       root.querySelector('#gImport').onclick = () => $('#fileInput').click();
       const list = root.querySelector('#libList');
-      let index = [];
+      let index = [], token = null;
+      const savedIds = new Set(saved.map(r => r.driveId || r.id));
+      const val = id => root.querySelector(id).value;
       const show = () => {
-        const q = root.querySelector('#libQ').value.trim();
-        const rows = index.filter(r => !q || (r.title + ' ' + (r.region || '')).includes(q)).slice(0, 60);
-        list.innerHTML = rows.map(r => `<div class="row"><div class="grow"><div class="title">${esc(r.title)}</div><div class="sub">${esc([r.region, r.length, r.difficulty].filter(Boolean).join(' · '))}${r.stations ? ` · ${r.stations} תחנות` : ''}</div></div>
-          <button class="btn" data-get="${esc(r.id)}">הורד</button></div>`).join('') || '<p class="note">לא נמצאו מסלולים.</p>';
+        const q = val('#libQ').trim().toLowerCase(), reg = val('#fRegion'), dif = val('#fDiff'), maxLen = parseFloat(val('#fLen')), onlySt = root.querySelector('#fSt').checked;
+        const here = me?.coord || map.getCenter().toArray();
+        let rows = index.filter(f => (!q || f.search.includes(q)) && (!reg || f.region === reg) && (!dif || f.difficulty === dif)
+          && (!(maxLen > 0) || !(f.length_km > maxLen)) && (!onlySt || f.stations > 0));
+        for (const f of rows) f.dist = f.lat != null ? distance(here, [f.lon, f.lat]) : Infinity;
+        const sort = val('#fSort');
+        rows.sort(sort === 'near' ? (x, y) => x.dist - y.dist : sort === 'len' ? (x, y) => (x.length_km ?? 1e9) - (y.length_km ?? 1e9) : (x, y) => x.title.localeCompare(y.title, 'he'));
+        root.querySelector('#libCount').textContent = `${rows.length} מסלולים${rows.length > 80 ? ' (מוצגים 80 הראשונים)' : ''}`;
+        rows = rows.slice(0, 80);
+        list.innerHTML = rows.map(f => `<div class="row"><div class="grow"><div class="title">${esc(f.title)}</div><div class="sub">${savedIds.has(f.id) ? '✓ במכשיר · ' : ''}${esc([f.region, f.length_km ? f.length_km + ' ק"מ' : '', f.difficulty, f.stations ? f.stations + ' תחנות' : '', f.dist < Infinity ? fmtDist(f.dist) + ' ממך' : ''].filter(Boolean).join(' · '))}</div></div>
+          <button class="btn" data-get="${esc(f.id)}">${savedIds.has(f.id) ? 'עדכן' : 'הורד'}</button></div>`).join('') || '<p class="note">לא נמצאו מסלולים.</p>';
         list.querySelectorAll('[data-get]').forEach(b => b.onclick = async () => {
-          try { const r = await fetchLibraryRoute(settings.libraryUrl, b.dataset.get); await idb.put('routes', r); toast('נשמר במכשיר'); panels.library(); }
-          catch { toast('לא הצלחתי להוריד. בדוק שה-Tailscale פעיל'); }
+          b.disabled = true; b.textContent = '…';
+          try {
+            const f = index.find(x => x.id === b.dataset.get);
+            const r = await getDriveRoute(token || await sync.driveToken(), f);
+            const old = saved.find(x => x.driveId === f.id); if (old && old.id !== r.id) await idb.del('routes', old.id);
+            await idb.put('routes', r); toast('המסלול נשמר במכשיר, מוריד מפות…');
+            await downloadRouteMaps(r);
+          } catch (e) { toast(e.auth ? 'צריך להתחבר שוב לגוגל' : 'לא הצלחתי להוריד מהדרייב'); b.disabled = false; b.textContent = 'הורד'; }
         });
       };
-      const loadIndex = async () => {
-        if (!settings.libraryUrl) return;
-        list.innerHTML = '<p class="note">טוען…</p>';
-        try { index = (await fetchLibraryIndex(settings.libraryUrl)).routes || []; show(); }
-        catch { list.innerHTML = '<p class="note">הספרייה לא זמינה כרגע (צריך קליטה ו-Tailscale).</p>'; }
-      };
-      root.querySelector('#libSave').onclick = () => { settings.libraryUrl = root.querySelector('#libUrl').value.trim(); idb.kvSet('libraryUrl', settings.libraryUrl); loadIndex(); };
+      root.querySelector('#drv')?.addEventListener('click', async () => {
+        list.innerHTML = '<p class="note">טוען מהדרייב…</p>';
+        try {
+          token = await sync.driveToken();
+          const res = await listDriveRoutes(token);
+          index = res.files.map(f => ({ ...f, search: [f.title, f.region, f.stationNames].filter(Boolean).join(' ').toLowerCase() }));
+          const opts = (id, key) => { const el = root.querySelector(id); [...new Set(index.map(f => f[key]).filter(Boolean))].sort((x, y) => x.localeCompare(y, 'he')).forEach(v => el.add(new Option(v, v))); };
+          opts('#fRegion', 'region'); opts('#fDiff', 'difficulty');
+          root.querySelector('#libFilters').classList.toggle('hidden', !index.length);
+          if (!res.folder) list.innerHTML = `<p class="note">לא מצאתי בדרייב תיקייה בשם "${DRIVE_FOLDER}".</p>`;
+          else if (!index.length) list.innerHTML = '<p class="note">התיקייה ריקה.</p>';
+          else show();
+        } catch (e) { list.innerHTML = `<p class="note">${navigator.onLine ? 'לא הצלחתי להתחבר לדרייב. נסה שוב.' : 'אין קליטה. מסלולים שכבר במכשיר עובדים כרגיל.'}</p>`; }
+      });
       root.querySelector('#libQ').oninput = debounce(show, 200);
-      loadIndex();
+      ['#fRegion', '#fDiff', '#fLen', '#fSort', '#fSt'].forEach(id => root.querySelector(id).onchange = show);
+    });
+  },
+
+  // Search: coordinates, my points and tracks, saved guided routes and their stations, points loaded on the map,
+  // and (online, on submit only, per the Nominatim usage policy) place names from OpenStreetMap.
+  search() {
+    openSheet('search', 'חיפוש', `
+      <form id="sForm" class="searchbar"><input id="sQ" type="search" placeholder="מקום, נקודה, מסלול או נ.צ (33.24, 35.75)" autocomplete="off" enterkeyhint="search">
+        <button class="btn primary">חפש</button></form>
+      <div id="sLocal"></div><div id="sOnline"></div>`, root => {
+      const q = root.querySelector('#sQ'); setTimeout(() => q.focus(), 50);
+      const loc = root.querySelector('#sLocal'), onl = root.querySelector('#sOnline');
+      const here = () => me?.coord || map.getCenter().toArray();
+      let results = [], placeRes = [], placeQ = '';
+      const row = (r, i) => `<div class="row" data-res="${i}"><span>${r.icon}</span><div class="grow"><div class="title">${esc(r.name)}</div>
+        <div class="sub">${esc(r.sub || '')}${r.coord ? ` · ${fmtDist(distance(here(), r.coord))}` : ''}</div></div></div>`;
+      const bind = (el, arr) => el.querySelectorAll('[data-res]').forEach(b => b.onclick = () => goTo(arr[b.dataset.res]));
+      const local = async () => {
+        const t = q.value.trim();
+        if (t !== placeQ) onl.innerHTML = '';
+        results = [];
+        if (!t) { loc.innerHTML = '<p class="note">חיפוש בנקודות ובמסלולים שלך, בתחנות של מסלולים מודרכים, בנקודות שעל המפה, ובשמות מקומות (כשיש קליטה).</p>'; return; }
+        const c = t.match(/^\s*(-?\d{1,2}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)\s*$/);
+        if (c) {
+          let [a, b] = [+c[1], +c[2]]; if (a > b && a > 34 && a < 36.5) [a, b] = [b, a]; // lat,lon or lon,lat in Israel
+          results.push({ icon: '📍', name: `${a.toFixed(5)}, ${b.toFixed(5)}`, sub: 'נקודת ציון', coord: [b, a] });
+        }
+        const has = x => (x || '').toLowerCase().includes(t.toLowerCase());
+        for (const i of liveItems()) if (has(i.name) || has(i.desc)) {
+          const coord = i.kind === 'point' ? i.geometry.coordinates : i.geometry.coordinates[0];
+          results.push({ icon: i.kind === 'point' ? '⭐' : '〰️', name: i.name, sub: i.kind === 'point' ? 'נקודה שלי' : 'מסלול שלי', coord, item: i });
+        }
+        for (const r of await idb.all('routes')) {
+          if (has(r.title)) results.push({ icon: '📖', name: r.title, sub: 'מסלול מודרך', coord: r.line[0] || (r.stations[0] && [r.stations[0].lon, r.stations[0].lat]), route: r });
+          for (const st of r.stations) if (has(st.name)) results.push({ icon: '📖', name: `${st.n} · ${st.name}`, sub: r.title, coord: [st.lon, st.lat] });
+        }
+        for (const f of poiFeatures) if (has(f.properties.name)) results.push({ icon: f.properties.icon || '•', name: f.properties.name, sub: 'על המפה', coord: f.geometry.coordinates });
+        results.sort((a, b) => (a.coord && b.coord) ? distance(here(), a.coord) - distance(here(), b.coord) : 0);
+        results = results.slice(0, 60);
+        loc.innerHTML = results.map(row).join('') || '<p class="note">אין תוצאות אצלך. לחץ "חפש" לחיפוש מקומות.</p>';
+        bind(loc, results);
+      };
+      const online = async () => {
+        const t = q.value.trim(); if (!t) return;
+        if (!navigator.onLine) { onl.innerHTML = '<p class="note">אין קליטה לחיפוש מקומות.</p>'; return; }
+        onl.innerHTML = '<p class="note">מחפש מקומות…</p>';
+        try {
+          const [lon, lat] = here();
+          const u = new URL('https://nominatim.openstreetmap.org/search');
+          u.search = new URLSearchParams({ q: t, format: 'jsonv2', limit: 15, 'accept-language': 'he,en', viewbox: `${lon - 1},${lat + 1},${lon + 1},${lat - 1}` });
+          const list = await (await fetch(u)).json();
+          placeQ = t;
+          const more = list.map(x => ({ icon: '🗺️', name: x.name || x.display_name.split(',')[0], sub: x.display_name.split(',').slice(1, 3).join(',').trim(), coord: [+x.lon, +x.lat], bbox: x.boundingbox }));
+          placeRes = more;
+          onl.innerHTML = more.length ? '<div class="group">מקומות</div>' + more.map(row).join('') : '<p class="note">לא נמצאו מקומות.</p>';
+          bind(onl, placeRes);
+        } catch { onl.innerHTML = '<p class="note">חיפוש המקומות לא זמין כרגע.</p>'; }
+      };
+      q.oninput = debounce(local, 150);
+      root.querySelector('#sForm').onsubmit = e => { e.preventDefault(); q.blur(); local().then(online); };
+      local();
     });
   },
 
@@ -539,6 +638,50 @@ document.querySelectorAll('.toolbar button[data-panel]').forEach(b => b.onclick 
   if (sheetOpen() === b.dataset.panel) closeSheet(); else panels[b.dataset.panel]();
 });
 $('#sheetClose').onclick = closeSheet;
+
+// Downloads the map tiles around a guided route (current basemap if it allows offline use, else the hiking map),
+// as deep as fits the tile limit, so the route works with no signal.
+async function downloadRouteMaps(route) {
+  if (!route) return;
+  const pts = [...route.line, ...route.driveLine, ...route.stations.map(s => [s.lon, s.lat])];
+  if (!pts.length) return toast('למסלול אין קואורדינטות');
+  const lons = pts.map(p => p[0]), lats = pts.map(p => p[1]), pad = 0.01;
+  const b = new maplibregl.LngLatBounds([Math.min(...lons) - pad, Math.min(...lats) - pad], [Math.max(...lons) + pad, Math.max(...lats) + pad]);
+  let base = BASEMAPS.find(x => x.id === settings.base);
+  if (!base?.offline) base = BASEMAPS.find(x => x.offline);
+  const srcs = [base, ...RASTER_OVERLAYS.filter(o => settings.overlays.has(o.id) && o.offline)];
+  if (settings.hillshade || settings.terrain) srcs.push({ ...DEM, maxzoom: Math.min(DEM.maxzoom, 12) });
+  let zMax = 16;
+  while (zMax > 12 && countTiles(b, 8, zMax) * srcs.length > MAX_TILES) zMax--;
+  const r = await downloadArea(srcs, b, 8, zMax, (d, t) => toast(`מוריד מפות למסלול… ${d}/${t}`, 4000));
+  const maps = await idb.kvGet('routeMaps', {}); maps[route.id] = { at: Date.now(), zMax, base: base.id, failed: r.failed };
+  await idb.kvSet('routeMaps', maps);
+  toast(r.failed ? `המפות נשמרו, ${r.failed} אריחים נכשלו (נסה שוב עם קליטה)` : `המסלול והמפות שמורים (עד זום ${zMax}). עובד בלי קליטה.`, 4000);
+  if (sheetOpen() === 'library') panels.library();
+}
+
+let searchMarker;
+function goTo(r) {
+  if (!r) return;
+  closeSheet();
+  if (r.route) return startRoute(r.route);
+  if (r.item && r.item.kind === 'track') return map.fitBounds(bboxOf({ type: 'Feature', geometry: r.item.geometry }), { padding: 60 });
+  if (r.bbox) {
+    const [s, n, w, e] = r.bbox.map(Number);
+    if (n - s > 0.002) { map.fitBounds([[w, s], [e, n]], { padding: 40, maxZoom: 15 }); }
+    else map.flyTo({ center: r.coord, zoom: 15 });
+  } else map.flyTo({ center: r.coord, zoom: 15 });
+  searchMarker?.remove();
+  searchMarker = new maplibregl.Marker({ color: '#d63b2f' }).setLngLat(r.coord).addTo(map);
+  const pop = new maplibregl.Popup({ offset: 28 }).setHTML(`<div class="popup"><h4>${esc(r.name)}</h4><div class="btns"><button class="btn primary" data-act="nav">נווט לכאן</button><button class="btn" data-act="save">שמור אצלי</button><button class="btn" data-act="clr">הסר</button></div></div>`);
+  searchMarker.setPopup(pop); pop.on('open', () => {
+    const el = pop.getElement();
+    el.querySelector('[data-act=nav]').onclick = () => { pop.remove(); startNav({ name: r.name, coord: r.coord }); };
+    el.querySelector('[data-act=save]').onclick = async () => { pop.remove(); await saveItem({ id: uid(), kind: 'point', name: r.name, desc: r.sub || '', color: '#7d3cff', geometry: { type: 'Point', coordinates: r.coord } }); toast('נשמר בנקודות שלי'); };
+    el.querySelector('[data-act=clr]').onclick = () => { searchMarker.remove(); searchMarker = null; };
+  });
+  searchMarker.togglePopup();
+}
 
 // ---------------------------------------------------------------- misc
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
