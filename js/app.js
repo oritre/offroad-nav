@@ -398,6 +398,11 @@ function drawGuide() {
   const features = [];
   const lineOk = r.fit !== 'failed';
   if (r.line.length && lineOk) features.push({ type: 'Feature', properties: { kind: r.fit === 'weak' ? 'walk-approx' : 'walk' }, geometry: { type: 'LineString', coordinates: r.line } });
+  // Routes split into parts (e.g. a second walking section) carry extra lines.
+  if (lineOk) {
+    for (const l of r.extraLines || []) if (l.length > 1) features.push({ type: 'Feature', properties: { kind: r.fit === 'weak' ? 'walk-approx' : 'walk' }, geometry: { type: 'LineString', coordinates: l } });
+    for (const l of r.extraDriveLines || []) if (l.length > 1) features.push({ type: 'Feature', properties: { kind: 'drive' }, geometry: { type: 'LineString', coordinates: l } });
+  }
   if (r.driveLine.length && lineOk) features.push({ type: 'Feature', properties: { kind: 'drive' }, geometry: { type: 'LineString', coordinates: r.driveLine } });
   src.setData({ type: 'FeatureCollection', features });
   for (const s of r.stations.filter(located)) {
@@ -418,7 +423,7 @@ async function restoreGuide() {
 async function startRoute(r) {
   await guide.start(r);
   startGps();
-  const all = [...r.line, ...r.driveLine, ...r.stations.filter(located).map(s => [s.lon, s.lat]), ...(r.start ? [r.start] : [])];
+  const all = [...r.line, ...r.driveLine, ...(r.extraLines || []).flat(), ...(r.extraDriveLines || []).flat(), ...r.stations.filter(located).map(s => [s.lon, s.lat]), ...(r.start ? [r.start] : [])];
   if (all.length) map.fitBounds(bboxOf({ type: 'Feature', geometry: { type: 'MultiPoint', coordinates: all } }), { padding: 60, duration: 800 });
   closeSheet();
   if (r.intro?.length) openReader(r.title, r.intro);
@@ -728,7 +733,7 @@ function activeRouteHtml(r) {
 // as deep as fits the tile limit, so the route works with no signal.
 async function downloadRouteMaps(route) {
   if (!route) return;
-  const pts = [...route.line, ...route.driveLine, ...route.stations.filter(located).map(s => [s.lon, s.lat]), ...(route.start ? [route.start] : [])];
+  const pts = [...route.line, ...route.driveLine, ...(route.extraLines || []).flat(), ...(route.extraDriveLines || []).flat(), ...route.stations.filter(located).map(s => [s.lon, s.lat]), ...(route.start ? [route.start] : [])];
   if (!pts.length) return toast('למסלול אין קואורדינטות');
   const lons = pts.map(p => p[0]), lats = pts.map(p => p[1]), pad = 0.01;
   const b = new maplibregl.LngLatBounds([Math.min(...lons) - pad, Math.min(...lats) - pad], [Math.max(...lons) + pad, Math.max(...lats) + pad]);
