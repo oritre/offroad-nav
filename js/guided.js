@@ -26,6 +26,7 @@ export function normalizeRoute(raw, fallbackId) {
     title: raw.title || raw.route || 'מסלול',
     intro: raw.intro || [],
     line: raw.line || [], driveLine: raw.driveLine || [],
+    extraLines: raw.extraLines || [], extraDriveLines: raw.extraDriveLines || [],
     fit: raw.fit || null, start: raw.start || null, navLinks: raw.navLinks || [], mapImage: raw.mapImage || null, category: raw.category || null,
     stations, importedAt: Date.now(),
   };
