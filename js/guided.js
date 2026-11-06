@@ -12,7 +12,7 @@ import { $, esc, toast } from './ui.js';
 
 export const ARRIVE_M = 45;
 // Stations placed automatically from a drawn map are typically 50-180 m off, so they get a wider arrival radius.
-const RADIUS = { high: 120, medium: 160, low: 220 };
+const RADIUS = { high: 120, medium: 160 };
 export const arriveRadius = s => RADIUS[s.conf] || ARRIVE_M;
 
 export function normalizeRoute(raw, fallbackId) {
@@ -26,7 +26,7 @@ export function normalizeRoute(raw, fallbackId) {
     title: raw.title || raw.route || 'מסלול',
     intro: raw.intro || [],
     line: raw.line || [], driveLine: raw.driveLine || [],
-    start: raw.start || null, navLinks: raw.navLinks || [], mapImage: raw.mapImage || null, category: raw.category || null,
+    fit: raw.fit || null, start: raw.start || null, navLinks: raw.navLinks || [], mapImage: raw.mapImage || null, category: raw.category || null,
     stations, importedAt: Date.now(),
   };
 }
@@ -67,6 +67,8 @@ export function openImage(title, blob) {
   speakingText = '';
 }
 export const located = s => s.lat != null && s.lon != null;
+// Low-confidence stations are shown on the map but never pop up by themselves (they can be far off).
+export const autoOpens = s => located(s) && s.conf !== 'low';
 
 export function speak(text) {
   if (!('speechSynthesis' in window) || !text) return toast('הקראה לא נתמכת בדפדפן הזה');
@@ -115,7 +117,7 @@ export const guide = {
 
   nextStation(pos) {
     if (!this.route) return null;
-    const left = this.route.stations.filter(s => !this.visited.has(s.n) && located(s));
+    const left = this.route.stations.filter(s => !this.visited.has(s.n) && autoOpens(s));
     if (!left.length) return null;
     if (!pos) return left[0];
     return left.reduce((a, b) => distance(pos, [a.lon, a.lat]) <= distance(pos, [b.lon, b.lat]) ? a : b);
@@ -125,7 +127,7 @@ export const guide = {
   async onPosition(pos) {
     if (!this.route) return;
     for (const s of this.route.stations) {
-      if (this.visited.has(s.n) || !located(s)) continue;
+      if (this.visited.has(s.n) || !autoOpens(s)) continue;
       if (distance(pos, [s.lon, s.lat]) <= arriveRadius(s)) {
         this.visited.add(s.n);
         await idb.kvSet(`visited:${this.route.id}`, [...this.visited]);
