@@ -55,6 +55,9 @@ map.on('load', () => {
     paint: { 'line-color': '#ffffff', 'line-width': 8, 'line-opacity': 0.8 }, layout: { 'line-cap': 'round', 'line-join': 'round' } });
   map.addLayer({ id: 'guide-walk', type: 'line', source: 'guide', filter: ['==', ['get', 'kind'], 'walk'],
     paint: { 'line-color': '#7d3cff', 'line-width': 5 }, layout: { 'line-cap': 'round', 'line-join': 'round' } });
+  // Walking line traced from a drawn map with a weak fit: dashed and lighter, as a hint only.
+  map.addLayer({ id: 'guide-walk-approx', type: 'line', source: 'guide', filter: ['==', ['get', 'kind'], 'walk-approx'],
+    paint: { 'line-color': '#7d3cff', 'line-width': 4, 'line-opacity': 0.6, 'line-dasharray': [1.5, 1.5] } });
   map.addLayer({ id: 'mine-lines', type: 'line', source: 'mine', filter: ['==', ['geometry-type'], 'LineString'],
     paint: { 'line-color': ['coalesce', ['get', 'color'], '#d63b2f'], 'line-width': 4 }, layout: { 'line-cap': 'round', 'line-join': 'round' } });
   map.addLayer({ id: 'rec-line', type: 'line', source: 'rec', paint: { 'line-color': '#d63b2f', 'line-width': 4, 'line-dasharray': [1, 1] } });
@@ -393,8 +396,9 @@ function drawGuide() {
   const src = map.getSource('guide'); if (!src) return;
   if (!r) { src.setData(empty()); return updateNav(); }
   const features = [];
-  if (r.line.length) features.push({ type: 'Feature', properties: { kind: 'walk' }, geometry: { type: 'LineString', coordinates: r.line } });
-  if (r.driveLine.length) features.push({ type: 'Feature', properties: { kind: 'drive' }, geometry: { type: 'LineString', coordinates: r.driveLine } });
+  const lineOk = r.fit !== 'failed';
+  if (r.line.length && lineOk) features.push({ type: 'Feature', properties: { kind: r.fit === 'weak' ? 'walk-approx' : 'walk' }, geometry: { type: 'LineString', coordinates: r.line } });
+  if (r.driveLine.length && lineOk) features.push({ type: 'Feature', properties: { kind: 'drive' }, geometry: { type: 'LineString', coordinates: r.driveLine } });
   src.setData({ type: 'FeatureCollection', features });
   for (const s of r.stations.filter(located)) {
     const el = document.createElement('div');
@@ -502,7 +506,7 @@ const panels = {
     const saved = await idb.all('routes');
     const maps = await idb.kvGet('routeMaps', {});
     openSheet('library', 'מסלולים מודרכים', `
-      <p class="note">מסלול עם תחנות: הקו על המפה, וקטע הקריאה של כל תחנה נפתח לבד כשמגיעים אליה (במרחק ${ARRIVE_M} מ', ובתחנות שמוקמו אוטומטית עד 220 מ'). התוכן פרטי ונטען רק מהדרייב שלך או מקובץ.</p>
+      <p class="note">מסלול עם תחנות: הקו על המפה, וקטע הקריאה של כל תחנה נפתח לבד כשמגיעים אליה (במרחק ${ARRIVE_M} מ'; בתחנות שמוקמו אוטומטית עד 160 מ', ותחנה עם מיקום משוער נפתחת רק בלחיצה). התוכן פרטי ונטען רק מהדרייב שלך או מקובץ.</p>
       ${guide.route ? activeRouteHtml(guide.route, maps) : ''}
       <label class="row"><input type="checkbox" id="autoSpeak" ${guide.autoSpeak ? 'checked' : ''}><div class="grow"><div class="title">🔊 הקראה אוטומטית בהגעה לתחנה</div></div></label>
       <div class="group">שמורים במכשיר (עובדים בלי קליטה)</div>
@@ -709,7 +713,7 @@ document.querySelectorAll('.toolbar button[data-panel]').forEach(b => b.onclick 
 $('#sheetClose').onclick = closeSheet;
 
 function activeRouteHtml(r) {
-  const confTxt = { high: '', medium: ' · מיקום בקירוב', low: ' · מיקום משוער' };
+  const confTxt = { high: '', medium: ' · מיקום בקירוב', low: ' · מיקום משוער: נפתח רק בלחיצה' };
   return `<div class="row"><div class="grow"><div class="title">פעיל: ${esc(r.title)}</div><div class="sub">${guide.visited.size}/${r.stations.length} תחנות נקראו</div></div>
       <button class="btn" id="gReset">מההתחלה</button><button class="btn danger" id="gStop">סיום</button></div>
     <div class="btns">${r.intro?.length ? '<button class="btn" id="gIntro">📖 פתיחה</button>' : ''}${r.mapImage ? '<button class="btn" id="gMap">🗺️ המפה המצוירת</button>' : ''}
