@@ -5,6 +5,7 @@ import { sync } from './sync.js';
 import { distance, bearing, lineLength, fmtDist, fmtTime, bboxOf, parseFile, toGPX, download } from './geo.js';
 import { downloadArea, countTiles, cacheStats, clearTiles, MAX_TILES } from './offline.js';
 import { guide, openReader, openImage, closeReader, toggleSpeak, normalizeRoute, located, ARRIVE_M } from './guided.js';
+import { applyEdits, editId, needsFix } from './routeEdit.js';
 import { listDriveRoutes, getDriveRoute, getDriveImage, DRIVE_FOLDER } from './drive.js';
 import { $, esc, openSheet, closeSheet, sheetOpen, toast, swatches, bindSwatches } from './ui.js';
 
@@ -18,6 +19,8 @@ const settings = {
   terrain: await idb.kvGet('terrain', false),
 };
 const view = await idb.kvGet('view', { center: ISRAEL, zoom: 7.5 });
+// Hand-correction mode for the active guided route (see the editor section below); null when not editing.
+let editor = null;
 
 // ---------------------------------------------------------------- map
 const sources = {}, layers = [];
@@ -47,6 +50,7 @@ map.on('load', () => {
   map.addSource('rec', { type: 'geojson', data: empty() });
   map.addSource('navline', { type: 'geojson', data: empty() });
   map.addSource('accuracy', { type: 'geojson', data: empty() });
+  map.addSource('editpts', { type: 'geojson', data: empty() });
 
   map.addLayer({ id: 'accuracy', type: 'fill', source: 'accuracy', paint: { 'fill-color': '#1a73e8', 'fill-opacity': 0.12 } });
   map.addLayer({ id: 'guide-drive', type: 'line', source: 'guide', filter: ['==', ['get', 'kind'], 'drive'],
@@ -62,6 +66,7 @@ map.on('load', () => {
     paint: { 'line-color': ['coalesce', ['get', 'color'], '#d63b2f'], 'line-width': 4 }, layout: { 'line-cap': 'round', 'line-join': 'round' } });
   map.addLayer({ id: 'rec-line', type: 'line', source: 'rec', paint: { 'line-color': '#d63b2f', 'line-width': 4, 'line-dasharray': [1, 1] } });
   map.addLayer({ id: 'navline', type: 'line', source: 'navline', paint: { 'line-color': '#1a73e8', 'line-width': 3, 'line-dasharray': [2, 1.5] } });
+  map.addLayer({ id: 'editpts', type: 'circle', source: 'editpts', paint: { 'circle-radius': 5, 'circle-color': '#fff', 'circle-stroke-color': '#7d3cff', 'circle-stroke-width': 2.5 } });
   map.addLayer({ id: 'pois', type: 'circle', source: 'pois',
     paint: { 'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 7], 'circle-color': ['get', 'color'],
       'circle-stroke-color': '#fff', 'circle-stroke-width': 1.5 } });
@@ -82,9 +87,9 @@ map.on('moveend', debounce(refreshPois, 800));
 
 // Long-press (touch) or right-click adds a point.
 let pressTimer;
-map.on('touchstart', e => { if (e.originalEvent.touches.length === 1) pressTimer = setTimeout(() => editPoint(null, e.lngLat), 650); });
+map.on('touchstart', e => { if (e.originalEvent.touches.length === 1) pressTimer = setTimeout(() => { if (!editor) editPoint(null, e.lngLat); }, 650); });
 ['touchend', 'touchmove', 'dragstart', 'zoomstart'].forEach(ev => map.on(ev, () => clearTimeout(pressTimer)));
-map.on('contextmenu', e => editPoint(null, e.lngLat));
+map.on('contextmenu', e => { if (!editor) editPoint(null, e.lngLat); });
 
 // ---------------------------------------------------------------- user items (synced)
 const items = new Map((await idb.all('items')).map(i => [i.id, i]));
@@ -101,7 +106,8 @@ async function deleteItem(id) {
   const it = items.get(id); if (!it) return;
   await saveItem({ ...it, deleted: true, geometry: { type: 'Point', coordinates: [0, 0] } });
 }
-function liveItems(kind) { return [...items.values()].filter(i => !i.deleted && (!kind || i.kind === kind)); }
+// Route corrections (kind 'routeEdit') are synced like other items but are not shown as my points or tracks.
+function liveItems(kind) { return [...items.values()].filter(i => !i.deleted && (kind ? i.kind === kind : i.kind !== 'routeEdit')); }
 
 function renderMine() {
   const src = map.getSource('mine'); if (!src) return;
@@ -121,6 +127,8 @@ sync.init(async remote => {
     if (!local || (r.updatedAt || 0) > (local.updatedAt || 0)) { items.set(r.id, r); await idb.put('items', r); }
   }
   renderMine();
+  // A correction made on another device applies to the route running here right away.
+  if (guide.route && !editor && remote.some(r => r.kind === 'routeEdit' && r.routeId === guide.route.id)) reloadActiveRoute();
 }).catch(() => toast('הסנכרון לא זמין כרגע'));
 
 // ---------------------------------------------------------------- open data
@@ -141,6 +149,7 @@ async function refreshPois() {
 // ---------------------------------------------------------------- popups
 let popup;
 function showFeaturePopup(f, lngLat) {
+  if (editor) return;
   const p = f.properties;
   const coord = f.geometry.type === 'Point' ? f.geometry.coordinates : [lngLat.lng, lngLat.lat];
   let html = `<div class="popup"><h4>${p.icon ? p.icon + ' ' : ''}${esc(p.name)}</h4>`;
@@ -246,7 +255,7 @@ function onFix(p) {
   if (follow) map.easeTo({ center: me.coord, bearing: follow === 2 && heading != null ? heading : map.getBearing(), duration: 500 });
   onRecordFix(p);
   updateNav();
-  guide.onPosition(me.coord);
+  if (!editor) guide.onPosition(me.coord);
 }
 function circle([lon, lat], r) {
   const pts = [];
@@ -397,7 +406,7 @@ function drawGuide() {
   if (!r) { src.setData(empty()); return updateNav(); }
   const features = [];
   const lineOk = r.fit !== 'failed';
-  if (r.line.length && lineOk) features.push({ type: 'Feature', properties: { kind: r.fit === 'weak' ? 'walk-approx' : 'walk' }, geometry: { type: 'LineString', coordinates: r.line } });
+  if (r.line.length > 1 && lineOk) features.push({ type: 'Feature', properties: { kind: r.fit === 'weak' ? 'walk-approx' : 'walk' }, geometry: { type: 'LineString', coordinates: r.line } });
   // Routes split into parts (e.g. a second walking section) carry extra lines.
   if (lineOk) {
     for (const l of r.extraLines || []) if (l.length > 1) features.push({ type: 'Feature', properties: { kind: r.fit === 'weak' ? 'walk-approx' : 'walk' }, geometry: { type: 'LineString', coordinates: l } });
@@ -407,20 +416,34 @@ function drawGuide() {
   src.setData({ type: 'FeatureCollection', features });
   for (const s of r.stations.filter(located)) {
     const el = document.createElement('div');
-    el.className = 'station-pin' + (guide.visited.has(s.n) ? ' done' : '') + (s.conf === 'low' ? ' approx' : '');
+    el.className = 'station-pin' + (guide.visited.has(s.n) ? ' done' : '') + (s.conf === 'low' ? ' approx' : '') + (s.edited ? ' edited' : '')
+      + (editor && editor.sel === s.n ? ' sel' : '');
     el.textContent = s.n;
     el.title = s.name;
-    el.onclick = ev => { ev.stopPropagation(); openReader(`📖 ${s.n} · ${s.name}`, s.blocks); };
-    stationMarkers.push(new maplibregl.Marker({ element: el }).setLngLat([s.lon, s.lat]).addTo(map));
+    const m = new maplibregl.Marker({ element: el, draggable: !!editor }).setLngLat([s.lon, s.lat]).addTo(map);
+    if (editor) {
+      el.onclick = ev => { ev.stopPropagation(); editor.sel = s.n; editor.mode = 'st'; previewEdit(); };
+      m.on('dragend', () => { const ll = m.getLngLat(); editor.st[String(s.n)] = [ll.lng, ll.lat]; editor.sel = s.n; previewEdit(); });
+    } else el.onclick = ev => { ev.stopPropagation(); openReader(`📖 ${s.n} · ${s.name}`, s.blocks); };
+    stationMarkers.push(m);
   }
   updateNav();
 }
 guide.onUpdate = drawGuide;
 async function restoreGuide() {
   const id = await idb.kvGet('activeRoute', null);
-  if (id) { const r = await idb.get('routes', id); if (r) { await guide.start(r); startGps(); } }
+  if (id) { const r = await idb.get('routes', id); if (r) { await guide.start(withEdits(r)); startGps(); } }
+}
+const withEdits = r => applyEdits(r, items.get(editId(r.id)));
+async function reloadActiveRoute() {
+  if (!guide.route) return;
+  const raw = await idb.get('routes', guide.route.id);
+  if (raw) { guide.route = withEdits(raw); drawGuide(); }
+  if (sheetOpen() === 'library') panels.library();
 }
 async function startRoute(r) {
+  if (editor) exitEdit();
+  r = withEdits(r);
   await guide.start(r);
   startGps();
   const all = [...r.line, ...r.driveLine, ...(r.extraLines || []).flat(), ...(r.extraDriveLines || []).flat(), ...r.stations.filter(located).map(s => [s.lon, s.lat]), ...(r.start ? [r.start] : [])];
@@ -429,6 +452,100 @@ async function startRoute(r) {
   if (r.intro?.length) openReader(r.title, r.intro);
   else if (me?.coord) guide.onPosition(me.coord); // already standing at a station
 }
+// ---------------------------------------------------------------- hand corrections
+// Stations: drag a pin, or pick a station (also one with no location) and tap the map or use my GPS position.
+// Line: tap along the trail to draw a new walking line, or take one of my recorded tracks.
+// Saved as coordinates only in my synced items, so the correction reaches all my devices; the route file stays as it is.
+async function startEdit() {
+  const raw = guide.route && await idb.get('routes', guide.route.id);
+  if (!raw) return toast('המסלול לא שמור במכשיר');
+  const saved = items.get(editId(raw.id)), g = saved && !saved.deleted ? saved.geometry || {} : {};
+  editor = { raw, st: { ...(g.stations || {}) }, line: g.line ? g.line.map(p => [...p]) : null, sel: null, mode: 'st' };
+  closeSheet(); closeReader(); setFollow(0);
+  $('#editBar').classList.remove('hidden');
+  previewEdit();
+}
+function previewEdit() {
+  if (!editor) return;
+  const r = applyEdits(editor.raw, { geometry: { stations: editor.st, line: editor.line } });
+  if (editor.line) { r.line = editor.line; r.extraLines = []; r.fit = 'hand'; }
+  guide.route = r;
+  drawGuide();
+  map.getSource('editpts')?.setData({ type: 'FeatureCollection', features: editor.mode === 'line' && editor.line
+    ? editor.line.map(c => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: c } })) : [] });
+  renderEditBar();
+}
+function exitEdit() {
+  const raw = editor?.raw; editor = null;
+  $('#editBar').classList.add('hidden');
+  map.getSource('editpts')?.setData(empty());
+  if (raw && guide.route?.id === raw.id) { guide.route = withEdits(raw); drawGuide(); }
+}
+async function saveEdit() {
+  const { raw } = editor, id = editId(raw.id);
+  const geometry = { stations: editor.st };
+  if (editor.line?.length > 1) geometry.line = editor.line;
+  const empty_ = !Object.keys(geometry.stations).length && !geometry.line;
+  if (empty_) { if (items.get(id) && !items.get(id).deleted) await deleteItem(id); }
+  else await saveItem({ id, kind: 'routeEdit', routeId: raw.id, name: raw.title, geometry });
+  exitEdit();
+  toast(empty_ ? 'המסלול חזר למקור' : 'התיקון נשמר ויסונכרן לכל המכשירים שלך');
+}
+function renderEditBar() {
+  const e = editor, r = guide.route, bar = $('#editBar');
+  const sel = e.sel != null ? r.stations.find(s => s.n === e.sel) : null;
+  const tag = s => s.lat == null ? ' (בלי מיקום)' : s.edited ? ' ✏️' : s.conf === 'low' ? ' (משוער)' : '';
+  const tracks = liveItems('track');
+  bar.innerHTML = `<div class="edit-head"><b>✏️ תיקון: ${esc(r.title)}</b><span class="grow"></span>
+      <button class="btn primary" id="eSave">שמור</button><button class="btn" id="eCancel">ביטול</button></div>
+    <div class="seg"><button class="${e.mode === 'st' ? 'on' : ''}" data-mode="st">תחנות</button><button class="${e.mode === 'line' ? 'on' : ''}" data-mode="line">קו המסלול</button></div>
+    ${e.mode === 'st' ? `
+      <select id="eSel"><option value="">בחר תחנה…</option>${r.stations.map(s => `<option value="${esc(s.n)}" ${s.n === e.sel ? 'selected' : ''}>${esc(s.n)} · ${esc(s.name)}${tag(s)}</option>`).join('')}</select>
+      <p class="hint">${sel ? `גע במפה כדי להעביר את תחנה ${esc(sel.n)} לשם, או גרור את הסיכה שלה.` : 'גרור תחנה למקום הנכון, או בחר תחנה מהרשימה ואז גע במפה.'}</p>
+      ${sel ? `<div class="btns"><button class="btn" id="eHere">📍 למיקום שלי</button>${sel.lat != null ? '<button class="btn" id="eNone">בלי מיקום</button>' : ''}
+        ${String(sel.n) in e.st ? '<button class="btn" id="eOrig">↺ המיקום המקורי</button>' : ''}</div>` : ''}`
+    : `
+      <p class="hint">${e.line ? `גע במפה לאורך השביל, נקודה אחרי נקודה. ${e.line.length} נקודות${e.line.length > 1 ? `, ${fmtDist(lineLength(e.line))}` : ''}.` : 'הקו המקורי מוצג. "קו חדש" מתחיל ציור מאפס.'}</p>
+      <div class="btns">${e.line ? '<button class="btn" id="eUndo">↶ בטל נקודה</button><button class="btn" id="eClear">נקה</button><button class="btn" id="eOrigLine">↺ קו מקורי</button>' : '<button class="btn" id="eNew">קו חדש</button>'}
+        ${tracks.length ? `<select id="eTrack"><option value="">קו מהקלטה שלי…</option>${tracks.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join('')}</select>` : ''}</div>`}`;
+  const on = (id, fn) => bar.querySelector(id)?.addEventListener('click', fn);
+  on('#eSave', saveEdit);
+  on('#eCancel', exitEdit);
+  bar.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => { e.mode = b.dataset.mode; previewEdit(); });
+  bar.querySelector('#eSel')?.addEventListener('change', ev => {
+    e.sel = ev.target.value === '' ? null : r.stations.find(s => String(s.n) === ev.target.value)?.n ?? null;
+    const s = r.stations.find(x => x.n === e.sel);
+    if (s?.lat != null) map.easeTo({ center: [s.lon, s.lat], zoom: Math.max(map.getZoom(), 15) });
+    previewEdit();
+  });
+  on('#eHere', () => { if (!me?.coord) return toast('מחכה ל-GPS…'); e.st[String(e.sel)] = [...me.coord]; previewEdit(); });
+  on('#eNone', () => { e.st[String(e.sel)] = null; previewEdit(); });
+  on('#eOrig', () => { delete e.st[String(e.sel)]; previewEdit(); });
+  on('#eNew', () => { e.line = []; previewEdit(); });
+  on('#eUndo', () => { e.line.pop(); previewEdit(); });
+  on('#eClear', () => { e.line = []; previewEdit(); });
+  on('#eOrigLine', () => { e.line = null; previewEdit(); });
+  bar.querySelector('#eTrack')?.addEventListener('change', ev => {
+    const t = items.get(ev.target.value); if (!t) return;
+    e.line = t.geometry.coordinates.map(c => [c[0], c[1]]); previewEdit();
+    toast('הקו הוחלף בהקלטה. אפשר להמשיך לתקן נקודה אחרי נקודה.');
+  });
+}
+map.on('click', ev => {
+  if (!editor) return;
+  const c = [ev.lngLat.lng, ev.lngLat.lat];
+  if (editor.mode === 'line') { if (!editor.line) editor.line = []; editor.line.push(c); }
+  else if (editor.sel != null) editor.st[String(editor.sel)] = c;
+  else return toast('בחר קודם תחנה מהרשימה או גע בסיכה שלה');
+  previewEdit();
+});
+async function undoAllEdits() {
+  if (!confirm('לבטל את כל התיקונים הידניים במסלול הזה ולחזור למקור?')) return;
+  await deleteItem(editId(guide.route.id));
+  await reloadActiveRoute();
+  toast('המסלול חזר למקור');
+}
+
 $('#readerClose').onclick = closeReader;
 $('#readerSpeak').onclick = toggleSpeak;
 
@@ -515,7 +632,7 @@ const panels = {
       ${guide.route ? activeRouteHtml(guide.route, maps) : ''}
       <label class="row"><input type="checkbox" id="autoSpeak" ${guide.autoSpeak ? 'checked' : ''}><div class="grow"><div class="title">🔊 הקראה אוטומטית בהגעה לתחנה</div></div></label>
       <div class="group">שמורים במכשיר (עובדים בלי קליטה)</div>
-      ${saved.length ? saved.map(r => `<div class="row"><div class="grow"><div class="title">${esc(r.title)}</div><div class="sub">${r.stations.length} תחנות${r.line.length ? ` · ${fmtDist(lineLength(r.line))}` : ''} · ${maps[r.id] ? '✓ מפות שמורות' : 'מפות לא הורדו'}</div></div>
+      ${saved.length ? saved.map(r => `<div class="row"><div class="grow"><div class="title">${esc(r.title)}</div><div class="sub">${r.stations.length} תחנות${r.line.length ? ` · ${fmtDist(lineLength(r.line))}` : ''} · ${maps[r.id] ? '✓ מפות שמורות' : 'מפות לא הורדו'}${items.get(editId(r.id)) && !items.get(editId(r.id)).deleted ? ' · ✏️ תוקן ידנית' : needsFix(r) ? ' · ⚠ צריך בדיקה' : ''}</div></div>
         <button class="btn primary" data-start="${esc(r.id)}">התחל</button><button class="btn" data-maps="${esc(r.id)}" title="הורד מפות">⬇</button><button class="btn" data-rm="${esc(r.id)}">✕</button></div>`).join('') : '<p class="note">עדיין אין מסלולים במכשיר.</p>'}
       <div class="group">הדרייב שלי</div>
       <p class="note">קבצי המסלולים בתיקייה "${DRIVE_FOLDER}" בדרייב שלך. רק אתה רואה אותם. "הורד" שומר את המסלול ואת המפות סביבו במכשיר.</p>
@@ -530,6 +647,7 @@ const panels = {
           <label>מיון<select id="fSort"><option value="near">הכי קרוב אליי</option><option value="name">לפי שם</option><option value="len">לפי אורך</option></select></label>
         </div>
         <label class="row"><input type="checkbox" id="fSt"><div class="grow"><div class="title">רק מסלולים עם תחנות קריאה</div></div></label>
+        <label class="row"><input type="checkbox" id="fFix"><div class="grow"><div class="title">רק מסלולים שצריכים תיקון</div><div class="sub">קו משוער או חסר, או תחנות בלי מיקום מדויק</div></div></label>
         <p class="note" id="libCount"></p>
       </div>
       <div id="libList"></div>
@@ -537,6 +655,8 @@ const panels = {
       root.querySelector('#autoSpeak').onchange = e => { guide.autoSpeak = e.target.checked; idb.kvSet('autoSpeak', guide.autoSpeak); };
       root.querySelector('#gStop')?.addEventListener('click', async () => { await guide.stop(); panels.library(); });
       root.querySelector('#gReset')?.addEventListener('click', async () => { await guide.resetProgress(); panels.library(); });
+      root.querySelector('#gEdit')?.addEventListener('click', startEdit);
+      root.querySelector('#gUnedit')?.addEventListener('click', undoAllEdits);
       root.querySelector('#gIntro')?.addEventListener('click', () => openReader(guide.route.title, guide.route.intro));
       root.querySelector('#gMap')?.addEventListener('click', async () => { const r = await idb.get('routes', guide.route.id); r?.mapBlob ? openImage(`🗺️ ${r.title}`, r.mapBlob) : toast('המפה המצוירת לא הורדה'); });
       root.querySelectorAll('[data-read]').forEach(b => b.onclick = () => { const s = guide.route.stations.find(x => String(x.n) === b.dataset.read); openReader(`📖 ${s.n} · ${s.name}`, s.blocks); });
@@ -550,16 +670,16 @@ const panels = {
       const savedIds = new Set(saved.map(r => r.driveId || r.id));
       const val = id => root.querySelector(id).value;
       const show = () => {
-        const q = val('#libQ').trim().toLowerCase(), reg = val('#fRegion'), cat = val('#fCat'), dif = val('#fDiff'), maxLen = parseFloat(val('#fLen')), onlySt = root.querySelector('#fSt').checked;
+        const q = val('#libQ').trim().toLowerCase(), reg = val('#fRegion'), cat = val('#fCat'), dif = val('#fDiff'), maxLen = parseFloat(val('#fLen')), onlySt = root.querySelector('#fSt').checked, onlyFix = root.querySelector('#fFix').checked;
         const here = me?.coord || map.getCenter().toArray();
         let rows = index.filter(f => (!q || f.search.includes(q)) && (!reg || f.region === reg) && (!cat || f.category === cat) && (!dif || f.difficulty === dif)
-          && (!(maxLen > 0) || !(f.length_km > maxLen)) && (!onlySt || f.stations > 0));
+          && (!(maxLen > 0) || !(f.length_km > maxLen)) && (!onlySt || f.stations > 0) && (!onlyFix || metaNeedsFix(f)));
         for (const f of rows) f.dist = f.lat != null ? distance(here, [f.lon, f.lat]) : Infinity;
         const sort = val('#fSort');
         rows.sort(sort === 'near' ? (x, y) => x.dist - y.dist : sort === 'len' ? (x, y) => (x.length_km ?? 1e9) - (y.length_km ?? 1e9) : (x, y) => x.title.localeCompare(y.title, 'he'));
         root.querySelector('#libCount').textContent = `${rows.length} מסלולים${rows.length > 80 ? ' (מוצגים 80 הראשונים)' : ''}`;
         rows = rows.slice(0, 80);
-        list.innerHTML = rows.map(f => `<div class="row"><div class="grow"><div class="title">${esc(f.title)}</div><div class="sub">${savedIds.has(f.id) ? '✓ במכשיר · ' : ''}${esc([f.region, f.length_km ? f.length_km + ' ק"מ' : '', f.difficulty, f.stations ? f.stations + ' תחנות' : '', f.dist < Infinity ? fmtDist(f.dist) + ' ממך' : ''].filter(Boolean).join(' · '))}</div></div>
+        list.innerHTML = rows.map(f => `<div class="row"><div class="grow"><div class="title">${esc(f.title)}</div><div class="sub">${savedIds.has(f.id) ? '✓ במכשיר · ' : ''}${esc([f.region, f.length_km ? f.length_km + ' ק"מ' : '', f.difficulty, f.stations ? f.stations + ' תחנות' : '', metaNeedsFix(f) ? '⚠ צריך בדיקה' : '', f.dist < Infinity ? fmtDist(f.dist) + ' ממך' : ''].filter(Boolean).join(' · '))}</div></div>
           <button class="btn" data-get="${esc(f.id)}">${savedIds.has(f.id) ? 'עדכן' : 'הורד'}</button></div>`).join('') || '<p class="note">לא נמצאו מסלולים.</p>';
         list.querySelectorAll('[data-get]').forEach(b => b.onclick = async () => {
           b.disabled = true; b.textContent = '…';
@@ -590,7 +710,7 @@ const panels = {
         } catch (e) { list.innerHTML = `<p class="note">${navigator.onLine ? 'לא הצלחתי להתחבר לדרייב. נסה שוב.' : 'אין קליטה. מסלולים שכבר במכשיר עובדים כרגיל.'}</p>`; }
       });
       root.querySelector('#libQ').oninput = debounce(show, 200);
-      ['#fCat', '#fRegion', '#fDiff', '#fLen', '#fSort', '#fSt'].forEach(id => root.querySelector(id).onchange = show);
+      ['#fCat', '#fRegion', '#fDiff', '#fLen', '#fSort', '#fSt', '#fFix'].forEach(id => root.querySelector(id).onchange = show);
     });
   },
 
@@ -717,12 +837,20 @@ document.querySelectorAll('.toolbar button[data-panel]').forEach(b => b.onclick 
 });
 $('#sheetClose').onclick = closeSheet;
 
+// Library index rows carry the fit and per-confidence station counts (when the index has them).
+function metaNeedsFix(f) {
+  if (f.fit === 'weak' || f.fit === 'failed') return true;
+  const c = f.conf || {};
+  return (c.low || 0) + (c.null || c.none || 0) > 0;
+}
 function activeRouteHtml(r) {
-  const confTxt = { high: '', medium: ' · מיקום בקירוב', low: ' · מיקום משוער: נפתח רק בלחיצה' };
+  const confTxt = { high: '', medium: ' · מיקום בקירוב', low: ' · מיקום משוער: נפתח רק בלחיצה', hand: ' · ✏️ מוקם ידנית' };
   return `<div class="row"><div class="grow"><div class="title">פעיל: ${esc(r.title)}</div><div class="sub">${guide.visited.size}/${r.stations.length} תחנות נקראו</div></div>
       <button class="btn" id="gReset">מההתחלה</button><button class="btn danger" id="gStop">סיום</button></div>
     <div class="btns">${r.intro?.length ? '<button class="btn" id="gIntro">📖 פתיחה</button>' : ''}${r.mapImage ? '<button class="btn" id="gMap">🗺️ המפה המצוירת</button>' : ''}
       ${(r.navLinks || []).map((l, i) => `<button class="btn" data-navto="${i}">🚗 ${esc(l.label || 'נקודת ניווט')}</button>`).join('')}</div>
+    <div class="btns"><button class="btn" id="gEdit">✏️ תיקון ידני</button>${r.hasEdits ? '<button class="btn" id="gUnedit">↺ בטל תיקונים</button>' : ''}</div>
+    ${needsFix(r) ? `<p class="note">⚠ ${r.fit === 'failed' ? 'למסלול הזה אין קו: אפשר לצייר אותו ב"תיקון ידני".' : r.fit === 'weak' ? 'הקו משוער (מקווקו), וכדאי לבדוק אותו בשטח.' : 'יש תחנות עם מיקום משוער או בלי מיקום.'}</p>` : ''}
     <details class="stations"><summary>כל התחנות (${r.stations.length})</summary>
       ${r.stations.map(s => `<div class="row" data-read="${esc(s.n)}"><span class="station-pin small${guide.visited.has(s.n) ? ' done' : ''}">${esc(s.n)}</span>
         <div class="grow"><div class="title">${esc(s.name)}</div><div class="sub">${located(s) ? (s.role === 'driving access' ? 'גישה ברכב' : 'הליכה') + (confTxt[s.conf] || '') : 'בלי מיקום: לקריאה ידנית'}</div></div></div>`).join('')}
