@@ -12,7 +12,8 @@ import { $, esc, toast } from './ui.js';
 
 export const ARRIVE_M = 45;
 // Stations placed automatically from a drawn map are typically 50-180 m off, so they get a wider arrival radius.
-const RADIUS = { high: 120, medium: 160 };
+// Stations placed by hand on the map (conf 'hand') are usually within a few dozen metres.
+const RADIUS = { high: 120, medium: 160, hand: 60 };
 export const arriveRadius = s => RADIUS[s.conf] || ARRIVE_M;
 
 export function normalizeRoute(raw, fallbackId) {

@@ -132,3 +132,18 @@ button { font: inherit; color: inherit; cursor: pointer; }
 details.stations summary { cursor: pointer; padding: 8px 0; font-weight: 600; }
 details.stations .row { cursor: pointer; }
 .route-map { width: 100%; height: auto; display: block; touch-action: pinch-zoom; }
+
+.editbar { position: absolute; top: calc(44px + var(--safe-t)); right: 8px; left: 8px; z-index: 7; background: var(--surface); color: var(--ink);
+  border-radius: 14px; padding: 10px; box-shadow: 0 4px 16px rgba(0,0,0,.3); max-height: 45vh; overflow-y: auto; }
+.editbar .edit-head { display: flex; align-items: center; gap: 6px; }
+.editbar .edit-head b { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.editbar .grow { flex: 1; }
+.editbar .seg { display: flex; margin: 8px 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.editbar .seg button { flex: 1; padding: 7px; border: 0; background: transparent; color: inherit; font: inherit; }
+.editbar .seg button.on { background: var(--brand); color: var(--brand-ink); }
+.editbar select { width: 100%; font: inherit; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+.editbar .btns select { width: auto; flex: 1; min-width: 0; }
+.editbar .hint { margin: 6px 0 0; font-size: 13px; color: var(--muted); }
+.editbar .btns { margin: 8px 0 0; }
+.station-pin.edited { background: #2e7d32; }
+.station-pin.sel { outline: 3px solid #ffb300; outline-offset: 2px; transform: scale(1.15); }
