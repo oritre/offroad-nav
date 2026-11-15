@@ -2,7 +2,7 @@ import { BASEMAPS, RASTER_OVERLAYS, DEM } from './basemaps.js';
 import { POI_LAYERS, loadPoiLayer, loadWikipedia, weatherAt, WMO } from './overlays.js';
 import { idb } from './idb.js';
 import { sync } from './sync.js';
-import { distance, bearing, lineLength, fmtDist, fmtTime, bboxOf, parseFile, toGPX, download } from './geo.js';
+import { distance, bearing, lineLength, fmtDist, fmtTime, bboxOf, parseFile, toGPX, download, routeToGPX, shareOrDownload } from './geo.js';
 import { downloadArea, countTiles, cacheStats, clearTiles, MAX_TILES } from './offline.js';
 import { guide, openReader, openImage, closeReader, toggleSpeak, normalizeRoute, located, ARRIVE_M } from './guided.js';
 import { applyEdits, editId, needsFix } from './routeEdit.js';
@@ -539,6 +539,13 @@ map.on('click', ev => {
   else return toast('בחר קודם תחנה מהרשימה או גע בסיכה שלה');
   previewEdit();
 });
+async function exportRoute(r) {
+  if (!r) return;
+  // ASCII file name (some phones drop Hebrew names); the route title travels inside the GPX.
+  const name = `maslul-${String(r.id).replace(/[^\w-]+/g, '')}.gpx`;
+  const how = await shareOrDownload(name, routeToGPX(r));
+  if (how === 'downloaded') toast('הקובץ ירד. באופרואד: ייבוא קובץ ובחר אותו מההורדות', 4000);
+}
 async function undoAllEdits() {
   if (!confirm('לבטל את כל התיקונים הידניים במסלול הזה ולחזור למקור?')) return;
   await deleteItem(editId(guide.route.id));
@@ -633,7 +640,7 @@ const panels = {
       <label class="row"><input type="checkbox" id="autoSpeak" ${guide.autoSpeak ? 'checked' : ''}><div class="grow"><div class="title">🔊 הקראה אוטומטית בהגעה לתחנה</div></div></label>
       <div class="group">שמורים במכשיר (עובדים בלי קליטה)</div>
       ${saved.length ? saved.map(r => `<div class="row"><div class="grow"><div class="title">${esc(r.title)}</div><div class="sub">${r.stations.length} תחנות${r.line.length ? ` · ${fmtDist(lineLength(r.line))}` : ''} · ${maps[r.id] ? '✓ מפות שמורות' : 'מפות לא הורדו'}${items.get(editId(r.id)) && !items.get(editId(r.id)).deleted ? ' · ✏️ תוקן ידנית' : needsFix(r) ? ' · ⚠ צריך בדיקה' : ''}</div></div>
-        <button class="btn primary" data-start="${esc(r.id)}">התחל</button><button class="btn" data-maps="${esc(r.id)}" title="הורד מפות">⬇</button><button class="btn" data-rm="${esc(r.id)}">✕</button></div>`).join('') : '<p class="note">עדיין אין מסלולים במכשיר.</p>'}
+        <button class="btn primary" data-start="${esc(r.id)}">התחל</button><button class="btn" data-maps="${esc(r.id)}" title="הורד מפות">⬇</button><button class="btn" data-gpx="${esc(r.id)}" title="ייצוא GPX לאופרואד">📤</button><button class="btn" data-rm="${esc(r.id)}">✕</button></div>`).join('') : '<p class="note">עדיין אין מסלולים במכשיר.</p>'}
       <div class="group">הדרייב שלי</div>
       <p class="note">קבצי המסלולים בתיקייה "${DRIVE_FOLDER}" בדרייב שלך. רק אתה רואה אותם. "הורד" שומר את המסלול ואת המפות סביבו במכשיר.</p>
       ${sync.enabled ? '<div class="btns"><button class="btn primary" id="drv">הצג מסלולים מהדרייב</button></div>' : '<p class="note">צריך קודם להגדיר את החיבור לגוגל (Firebase).</p>'}
@@ -656,6 +663,8 @@ const panels = {
       root.querySelector('#gStop')?.addEventListener('click', async () => { await guide.stop(); panels.library(); });
       root.querySelector('#gReset')?.addEventListener('click', async () => { await guide.resetProgress(); panels.library(); });
       root.querySelector('#gEdit')?.addEventListener('click', startEdit);
+      root.querySelector('#gGpx')?.addEventListener('click', () => exportRoute(guide.route));
+      root.querySelectorAll('[data-gpx]').forEach(b => b.onclick = async () => exportRoute(withEdits(await idb.get('routes', b.dataset.gpx))));
       root.querySelector('#gUnedit')?.addEventListener('click', undoAllEdits);
       root.querySelector('#gIntro')?.addEventListener('click', () => openReader(guide.route.title, guide.route.intro));
       root.querySelector('#gMap')?.addEventListener('click', async () => { const r = await idb.get('routes', guide.route.id); r?.mapBlob ? openImage(`🗺️ ${r.title}`, r.mapBlob) : toast('המפה המצוירת לא הורדה'); });
@@ -849,7 +858,7 @@ function activeRouteHtml(r) {
       <button class="btn" id="gReset">מההתחלה</button><button class="btn danger" id="gStop">סיום</button></div>
     <div class="btns">${r.intro?.length ? '<button class="btn" id="gIntro">📖 פתיחה</button>' : ''}${r.mapImage ? '<button class="btn" id="gMap">🗺️ המפה המצוירת</button>' : ''}
       ${(r.navLinks || []).map((l, i) => `<button class="btn" data-navto="${i}">🚗 ${esc(l.label || 'נקודת ניווט')}</button>`).join('')}</div>
-    <div class="btns"><button class="btn" id="gEdit">✏️ תיקון ידני</button>${r.hasEdits ? '<button class="btn" id="gUnedit">↺ בטל תיקונים</button>' : ''}</div>
+    <div class="btns"><button class="btn" id="gEdit">✏️ תיקון ידני</button><button class="btn" id="gGpx">📤 ייצוא לאופרואד (GPX)</button>${r.hasEdits ? '<button class="btn" id="gUnedit">↺ בטל תיקונים</button>' : ''}</div>
     ${needsFix(r) ? `<p class="note">⚠ ${r.fit === 'failed' ? 'למסלול הזה אין קו: אפשר לצייר אותו ב"תיקון ידני".' : r.fit === 'weak' ? 'הקו משוער (מקווקו), וכדאי לבדוק אותו בשטח.' : 'יש תחנות עם מיקום משוער או בלי מיקום.'}</p>` : ''}
     <details class="stations"><summary>כל התחנות (${r.stations.length})</summary>
       ${r.stations.map(s => `<div class="row" data-read="${esc(s.n)}"><span class="station-pin small${guide.visited.has(s.n) ? ' done' : ''}">${esc(s.n)}</span>

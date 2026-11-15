@@ -78,11 +78,36 @@ export function toGPX(items, title = 'offroad-nav') {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="offroad-nav" xmlns="http://www.topografix.com/GPX/1/1">\n  <metadata><name>${esc(title)}</name></metadata>\n${[...wpts, ...trks].join('\n')}\n</gpx>\n`;
 }
 
+// A guided route as GPX for importing into another navigation app (e.g. Off-Road): walking and driving lines as tracks,
+// located stations and navigation points as waypoints. Coordinates and names only; the reading texts stay in this app.
+export function routeToGPX(r) {
+  const fit = { weak: ' (קו משוער)', failed: '' }[r.fit] || '';
+  const items = [];
+  const lines = [r.line, ...(r.extraLines || [])].filter(l => l?.length > 1 && r.fit !== 'failed');
+  lines.forEach((l, i) => items.push({ kind: 'track', name: `${r.title}${lines.length > 1 ? ` (${i + 1})` : ''}${fit}`, geometry: { coordinates: l } }));
+  const drives = [r.driveLine, ...(r.extraDriveLines || [])].filter(l => l?.length > 1 && r.fit !== 'failed');
+  drives.forEach((l, i) => items.push({ kind: 'track', name: `${r.title}: גישה ברכב${drives.length > 1 ? ` (${i + 1})` : ''}`, geometry: { coordinates: l } }));
+  for (const s of r.stations || []) if (s.lat != null && s.lon != null)
+    items.push({ kind: 'point', name: `📖 ${s.n} · ${s.name}`, desc: s.conf === 'low' ? 'מיקום משוער' : '', geometry: { coordinates: [s.lon, s.lat] } });
+  for (const l of r.navLinks || []) if (l.lat != null) items.push({ kind: 'point', name: `🚗 ${l.label || 'נקודת ניווט'}`, geometry: { coordinates: [l.lon, l.lat] } });
+  return toGPX(items, r.title);
+}
+
+// Hands a file to another app through the phone's share sheet when possible (e.g. straight into Off-Road), else downloads it.
+export async function shareOrDownload(name, text, type = 'application/gpx+xml') {
+  try {
+    const file = new File([text], name, { type });
+    if (navigator.canShare?.({ files: [file] })) { await navigator.share({ files: [file], title: name }); return 'shared'; }
+  } catch (e) { if (e?.name === 'AbortError') return 'cancelled'; }
+  download(name, text, type);
+  return 'downloaded';
+}
+
 export function download(name, text, type = 'application/gpx+xml') {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([text], { type }));
   a.download = name;
-  a.click();
+  document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
